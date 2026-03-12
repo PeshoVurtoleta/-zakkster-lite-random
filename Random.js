@@ -81,7 +81,12 @@ export class Random {
     shuffleInPlace(arr) {
         for (let i = arr.length - 1; i > 0; i--) {
             const j = Math.floor(this.next() * (i + 1));
-            [arr[i], arr[j]] = [arr[j], arr[i]];
+
+            //[a, b] = [b, a] allocates a temporary array in memory on every single loop iteration;
+            //Using the old-school temporary variable approach to guarantee zero memory allocation;
+            const temp = arr[i];
+            arr[i] = arr[j];
+            arr[j] = temp;
         }
         return arr;
     }
