@@ -1,0 +1,44 @@
+{
+  "name": "@zakkster/lite-random",
+  "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
+  "version": "1.0.0",
+  "description": "Zero-dependency seeded RNG for games — Mulberry32 PRNG with weighted drops, gaussian distribution, shuffle, and 2D vector helpers.",
+  "type": "module",
+  "main": "Random.js",
+  "types": "Random.d.ts",
+  "exports": {
+    ".": {
+      "types": "./Random.d.ts",
+      "import": "./Random.js",
+      "default": "./Random.js"
+    }
+  },
+  "files": [
+    "Random.js",
+    "Random.d.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "vitest": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "keywords": [
+    "random",
+    "rng",
+    "prng",
+    "seed",
+    "deterministic",
+    "game",
+    "mulberry32",
+    "shuffle",
+    "weighted",
+    "gaussian"
+  ]
+}
