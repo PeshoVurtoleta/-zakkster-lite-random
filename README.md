@@ -2,6 +2,8 @@
 
 [![npm version](https://img.shields.io/npm/v/@zakkster/lite-random.svg?style=for-the-badge&color=latest)](https://www.npmjs.com/package/@zakkster/lite-random)
 [![npm bundle size](https://img.shields.io/bundlephobia/minzip/@zakkster/lite-random?style=for-the-badge)](https://bundlephobia.com/result?p=@zakkster/lite-random)
+[![npm downloads](https://img.shields.io/npm/dm/@zakkster/lite-random?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-random)
+[![npm total downloads](https://img.shields.io/npm/dt/@zakkster/lite-random?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-random)
 ![TypeScript](https://img.shields.io/badge/TypeScript-Types-informational)
 ![Zero Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
@@ -207,6 +209,128 @@ particle.vx = rng.sign() * rng.range(50, 150);
 
 // Random clockwise/counterclockwise spin
 particle.rotation = rng.sign() * rng.range(1, 5);
+
+
+### Deterministic Replay (VCR Engine)
+                        
+The killer feature for bug reports, competitive games, and rollback netcode. By feeding the same seed and the same inputs into your game loop, your game will play out pixel-perfect every single time.
+
+<details>
+<summary><b>Click to expand: Production-Grade ReplayManager Recipe</b></summary>
+
+Below is a complete, framework-agnostic `ReplayManager` using delta-recording (keyframing) to keep memory usage tiny.
+
+```javascript
+import {Random} from '@zakkster/lite-random';
+
+export class ReplayManager {
+    /**
+     * @param {Object} defaultInput - The baseline input schema for the game
+     */
+    constructor(defaultInput = {}) {
+        this.defaultInput = defaultInput;
+        this.mode = 'live';
+        this.seed = null;
+        this.rng = null;
+
+        this.frames = [];      // [{ frame, input }]
+        this.frameIndex = 0;   // Array pointer for reading replays
+        this.frame = 0;        // Master timeline counter
+        this.playbackSpeed = 1;
+
+        this._lastLiveInput = null;
+        this._currentReplayInput = null;
+    }
+
+    startLive(seed = Date.now()) {
+        this.mode = 'live';
+        this.seed = seed;
+        this.rng = new Random(seed);
+        this.frames = [];
+        this.frame = 0;
+        this.frameIndex = 0;
+        this.playbackSpeed = 1;
+        this._lastLiveInput = null;
+    }
+
+    startReplay(replayData) {
+        this.mode = 'replay';
+        this.seed = replayData.seed;
+        this.rng = new Random(this.seed);
+        this.frames = replayData.frames || [];
+        this.frame = 0;
+        this.frameIndex = 0;
+        this.playbackSpeed = 1;
+        this._currentReplayInput = structuredClone(this.defaultInput);
+    }
+
+    recordInput(inputState) {
+        if (this.mode !== 'live') return;
+
+        if (!this._lastLiveInput || this._hasInputChanged(inputState)) {
+            // Native, deep, high-performance cloning
+            const clonedInput = structuredClone(inputState);
+
+            this.frames.push({frame: this.frame, input: clonedInput});
+            this._lastLiveInput = clonedInput;
+        }
+    }
+
+    getInput(liveInputState) {
+        if (this.mode === 'live') return liveInputState;
+
+        const nextKeyframe = this.frames[this.frameIndex];
+
+        if (nextKeyframe && this.frame >= nextKeyframe.frame) {
+            this._currentReplayInput = nextKeyframe.input;
+            this.frameIndex++;
+        }
+
+        return this._currentReplayInput;
+    }
+
+    nextFrame() {
+        this.frame += this.playbackSpeed;
+    }
+
+    isReplayFinished() {
+        return this.mode === 'replay' && this.frameIndex >= this.frames.length;
+    }
+
+    jumpToFrame(targetFrame) {
+        if (this.mode !== 'replay') return;
+
+        this.frame = targetFrame;
+
+        // Find the last keyframe that occurred BEFORE or ON our target frame
+        // (Reverse loop is usually faster since we often scrub near the end)
+        let foundIndex = 0;
+        for (let i = this.frames.length - 1; i >= 0; i--) {
+            if (this.frames[i].frame <= targetFrame) {
+                foundIndex = i;
+                break;
+            }
+        }
+
+        this.frameIndex = foundIndex + 1;
+        this._currentReplayInput = this.frames[foundIndex]?.input || structuredClone(this.defaultInput);
+    }
+
+    getRng() {
+        return this.rng;
+    }
+
+    toJSON() {
+        return {seed: this.seed, frames: this.frames};
+    }
+
+    _hasInputChanged(newState) {
+        // Deep comparison for nested objects (can be optimized if schema is flat)
+        return JSON.stringify(this._lastLiveInput) !== JSON.stringify(newState);
+    }
+}
+
+</details>
 ```
 
 ## TypeScript
