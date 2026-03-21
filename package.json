@@ -1,7 +1,7 @@
 {
   "name": "@zakkster/lite-random",
   "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
-  "version": "1.0.4",
+  "version": "1.0.6",
   "description": "Zero-dependency seeded RNG for games — Mulberry32 PRNG with weighted drops, gaussian distribution, shuffle, and 2D vector helpers.",
   "type": "module",
   "main": "Random.js",
@@ -23,13 +23,13 @@
     "test:watch": "vitest"
   },
   "license": "MIT",
-  "homepage": "https://github.com/PeshoVurtoleta/-zakkster-lite-random#readme",
+  "homepage": "https://github.com/PeshoVurtoleta/lite-random#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/PeshoVurtoleta/-zakkster-lite-random.git"
+    "url": "git+https://github.com/PeshoVurtoleta/lite-random.git"
   },
   "bugs": {
-    "url": "https://github.com/PeshoVurtoleta/-zakkster-lite-random/issues",
+    "url": "https://github.com/PeshoVurtoleta/lite-random/issues",
     "email": "shinikchiev@yahoo.com"
   },
   "devDependencies": {
