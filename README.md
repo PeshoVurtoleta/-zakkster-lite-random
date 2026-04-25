@@ -20,12 +20,47 @@ Most RNG libraries on npm are built for statisticians. They return closures and 
 
 - **No GC spikes** — direct execution (`rng.range(0, 1)`), zero allocations per call
 - **Deterministic replay** — same seed = same sequence, every time. Replay bugs, test edge cases, ship replays
+- **Serializable state** — `getState()` / `setState()` snapshot the entire RNG in a single 32-bit integer
 - **Game-ready API** — loot drops (`weighted()`), critical hits (`chance()`), 2D physics (`unitVector()`, `sign()`)
 - **Mulberry32 PRNG** — entire state in a single 32-bit integer. Blazing fast, minimal memory
 - **Natural distribution** — `gaussian()` for particle spread, procedural terrain, organic variation
 - **Zero dependencies** — < 1KB minified
 
 You don't need a statistics library to make a scratch card. You need `rng.chance(0.05)` and `rng.weighted()`.
+
+## How Determinism Works
+
+The whole engine fits in a single 32-bit integer. Every call to `next()` advances state through Mulberry32's mixer; every other method is built on top of `next()`. Same seed in → same sequence out, forever.
+
+```mermaid
+flowchart LR
+    A["new Random(seed)"] --> B["state = seed | 0"]
+    B --> C["next()"]
+    C --> D["state += 0x6D2B79F5 | 0"]
+    D --> E["mix: imul, xor, shift"]
+    E --> F["÷ 2³² → [0, 1)"]
+    F --> G["range / int / pick / weighted / ..."]
+    D -.advances.-> C
+```
+
+Because the entire state is one integer, you can snapshot and restore it at any point — making rollback netcode, save/load, and golden-master testing trivial.
+
+```mermaid
+sequenceDiagram
+    participant Game
+    participant RNG as Random
+    participant Save as Save File
+    Game->>RNG: new Random(seed)
+    Game->>RNG: next() × N
+    Game->>RNG: getState()
+    RNG-->>Game: state (int32)
+    Game->>Save: persist {seed, state}
+    Note over Game,Save: ...later, in another session...
+    Save-->>Game: load {seed, state}
+    Game->>RNG: new Random(seed).setState(state)
+    Game->>RNG: next()
+    Note over RNG: identical sequence resumes
+```
 
 ## Installation
 
@@ -48,6 +83,10 @@ rng.bool();           // 50/50
 rng.sign();           // -1 or 1
 rng.pick(['a','b']);   // random element
 rng.gaussian(0, 1);   // normal distribution
+
+// New in 1.1.0 — snapshot & restore
+const snap = rng.getState();
+rng.setState(snap);   // resume exactly where you were
 ```
 
 ## Benchmarks & Comparison
@@ -70,7 +109,8 @@ rng.gaussian(0, 1);   // normal distribution
 | <1KB | ✔ | ✔ | ✘ | ✘ |
 | Weighted selection | ✔ | ✘ | ✔ | ✘ |
 | Gaussian | ✔ | ✘ | ✔ | ✘ |
-| unitVector() | ✔ | ✘ | ✘ | ✘ |
+| `unitVector()` | ✔ | ✘ | ✘ | ✘ |
+| Serializable state | ✔ | ✘ | ✘ | ✘ |
 
 
 ## API Reference
@@ -79,14 +119,17 @@ rng.gaussian(0, 1);   // normal distribution
 |--------|---------|-------------|
 | `new Random(seed?)` | | Create RNG. Defaults to `Date.now()`. |
 | `.next()` | `number` | Float in [0, 1) |
-| `.reset(seed?)` | | Reset to seed (or original). Replay levels. |
+| `.reset(seed?)` | `this` | Reset to seed (or original). Chainable. |
+| `.getState()` | `number` | Snapshot the 32-bit state. |
+| `.setState(state)` | `this` | Restore the 32-bit state. Chainable. |
 | `.range(min, max)` | `number` | Float in [min, max) |
-| `.int(min, max)` | `number` | Integer in [min, max] inclusive |
+| `.int(min, max)` | `number` | Integer in [min, max] inclusive — unbiased on negatives |
 | `.chance(p)` | `boolean` | True with probability p |
 | `.bool()` | `boolean` | 50/50 |
 | `.sign()` | `-1 \| 1` | Random direction multiplier |
-| `.unitVector()` | `{x, y}` | Normalized 2D direction |
-| `.gaussian(mean?, std?)` | `number` | Normal distribution (Box-Muller) |
+| `.unitVector(out?)` | `{x, y}` | Normalized 2D direction. Pass `out` for Zero-GC. |
+| `.unitVectorArray(buf, i?)` | `buf` | Write unit vector into `buf[i]`, `buf[i+1]` |
+| `.gaussian(mean?, std?)` | `number` | Normal distribution (Box-Muller, 2 next() calls) |
 | `.pick(arr)` | `T \| null` | Random element |
 | `.shuffle(arr)` | `T[]` | New shuffled array |
 | `.shuffleInPlace(arr)` | `T[]` | Mutates in-place (GC-friendly) |
@@ -112,6 +155,16 @@ const drop = rng.weighted(
 );
 ```
 
+Visualized as relative odds:
+
+```mermaid
+pie showData title Loot Drop Distribution
+    "Common" : 60
+    "Rare" : 25
+    "Epic" : 10
+    "Legendary" : 5
+```
+
 ### Procedural Dungeon Generation
 
 Build deterministic levels that play the same every time for the same seed:
@@ -126,19 +179,51 @@ for (const room of rooms) {
 }
 ```
 
-### Deterministic Particle Burst
+### Zero-GC Particle Burst
 
-Reset the seed before a burst so the pattern is always identical — perfect for polished VFX:
+Reuse a single `out` object across the loop — no allocations per particle:
 
 ```javascript
 rng.reset(123);
-for (let i = 0; i < 20; i++) {
-    const dir = rng.unitVector();
+const dir = { x: 0, y: 0 };
+
+for (let i = 0; i < 200; i++) {
+    rng.unitVector(dir);
     emitter.emit({
         vx: dir.x * rng.range(100, 300),
         vy: dir.y * rng.range(100, 300),
         life: rng.range(0.5, 1.5),
     });
+}
+```
+
+### ECS Component Buffers
+
+Write directly into a `Float32Array` slot — perfect for SoA component layouts:
+
+```javascript
+const VELOCITIES = new Float32Array(MAX_ENTITIES * 2);
+
+function spawnAsteroid(id) {
+    rng.unitVectorArray(VELOCITIES, id * 2);
+    // VELOCITIES[id*2]   = vx
+    // VELOCITIES[id*2+1] = vy
+}
+```
+
+### Snapshot & Restore (Rollback Netcode)
+
+`getState()` returns a single 32-bit integer that fully describes the RNG. Cheap to send over the wire, cheap to store per-frame.
+
+```javascript
+// Each frame, snapshot before applying inputs
+const frameState = rng.getState();
+frameBuffer.push({ frame, state: frameState, inputs });
+
+// On rollback, restore and re-simulate
+rng.setState(frameBuffer[rollbackFrame].state);
+for (let f = rollbackFrame; f <= currentFrame; f++) {
+    simulate(frameBuffer[f].inputs);
 }
 ```
 
@@ -187,20 +272,6 @@ const deck = rng.shuffleInPlace(cards);   // mutates, GC-friendly
 const hand = rng.shuffle(deck);           // copy, original intact
 ```
 
-### Deterministic Replay
-
-The killer feature for bug reports and competitive games:
-
-```javascript
-// Record
-const gameSeed = Date.now();
-const rng = new Random(gameSeed);
-saveReplay({ seed: gameSeed, inputs: [...] });
-
-// Replay — identical sequence guaranteed
-const rng = new Random(replay.seed);
-```
-
 ### Random Sign for Directional Variety
 
 ```javascript
@@ -209,19 +280,38 @@ particle.vx = rng.sign() * rng.range(50, 150);
 
 // Random clockwise/counterclockwise spin
 particle.rotation = rng.sign() * rng.range(1, 5);
-
+```
 
 ### Deterministic Replay (VCR Engine)
-                        
-The killer feature for bug reports, competitive games, and rollback netcode. By feeding the same seed and the same inputs into your game loop, your game will play out pixel-perfect every single time.
+
+The killer feature for bug reports, competitive games, and rollback netcode. Feed the same seed and the same inputs into your game loop, and your game plays out frame-perfect every time.
+
+```mermaid
+flowchart TD
+    subgraph Live["Live Mode"]
+        L1[Player input] --> L2{Input changed?}
+        L2 -- yes --> L3[Record keyframe<br/>frame + input]
+        L2 -- no --> L4[Skip — last keyframe still valid]
+        L3 --> L5[Run sim with input]
+        L4 --> L5
+    end
+    subgraph Replay["Replay Mode"]
+        R1[Tick frame counter] --> R2{Reached next<br/>keyframe?}
+        R2 -- yes --> R3[Advance current input]
+        R2 -- no --> R4[Reuse current input]
+        R3 --> R5[Run sim with input]
+        R4 --> R5
+    end
+    Live -.same seed,<br/>same Random.-> Replay
+```
 
 <details>
 <summary><b>Click to expand: Production-Grade ReplayManager Recipe</b></summary>
 
-Below is a complete, framework-agnostic `ReplayManager` using delta-recording (keyframing) to keep memory usage tiny.
+A complete, framework-agnostic `ReplayManager` using delta-recording (keyframing) to keep memory usage tiny:
 
 ```javascript
-import {Random} from '@zakkster/lite-random';
+import { Random } from '@zakkster/lite-random';
 
 export class ReplayManager {
     /**
@@ -268,10 +358,8 @@ export class ReplayManager {
         if (this.mode !== 'live') return;
 
         if (!this._lastLiveInput || this._hasInputChanged(inputState)) {
-            // Native, deep, high-performance cloning
             const clonedInput = structuredClone(inputState);
-
-            this.frames.push({frame: this.frame, input: clonedInput});
+            this.frames.push({ frame: this.frame, input: clonedInput });
             this._lastLiveInput = clonedInput;
         }
     }
@@ -302,8 +390,6 @@ export class ReplayManager {
 
         this.frame = targetFrame;
 
-        // Find the last keyframe that occurred BEFORE or ON our target frame
-        // (Reverse loop is usually faster since we often scrub near the end)
         let foundIndex = 0;
         for (let i = this.frames.length - 1; i >= 0; i--) {
             if (this.frames[i].frame <= targetFrame) {
@@ -313,7 +399,8 @@ export class ReplayManager {
         }
 
         this.frameIndex = foundIndex + 1;
-        this._currentReplayInput = this.frames[foundIndex]?.input || structuredClone(this.defaultInput);
+        this._currentReplayInput = this.frames[foundIndex]?.input
+            || structuredClone(this.defaultInput);
     }
 
     getRng() {
@@ -321,16 +408,41 @@ export class ReplayManager {
     }
 
     toJSON() {
-        return {seed: this.seed, frames: this.frames};
+        return { seed: this.seed, frames: this.frames };
     }
 
     _hasInputChanged(newState) {
-        // Deep comparison for nested objects (can be optimized if schema is flat)
         return JSON.stringify(this._lastLiveInput) !== JSON.stringify(newState);
     }
 }
+```
 
 </details>
+
+## Migration: 1.0.x → 1.1.0
+
+**No breaking changes.** Existing code keeps working unchanged.
+
+Two behaviors are tightened up that you may want to know about:
+
+1. **`int(min, max)` is now uniform on negative ranges.** Before 1.1.0, calling
+   `int(-5, 5)` would never return `-5` and would over-return `0`. If your game
+   relied on that bias (extremely unlikely), reseeding will now produce a slightly
+   different sequence on calls that hit `int()` with negative `min`. Pure positive
+   ranges (`int(0, 10)`, `int(1, 6)`) are byte-identical to 1.0.x.
+2. **`reset()` now returns `this`.** Old code that ignored the return value still
+   works. New code can chain: `rng.reset(seed).next()`.
+
+New surface to take advantage of:
+
+```javascript
+// Snapshot + restore
+const snap = rng.getState();
+rng.setState(snap);
+
+// Zero-GC unit vectors
+rng.unitVector(reusedObj);
+rng.unitVectorArray(float32Buffer, entityId * 2);
 ```
 
 ## TypeScript
@@ -343,6 +455,8 @@ import { Random } from '@zakkster/lite-random';
 const rng = new Random(42);
 const item: string = rng.pick(['sword', 'shield', 'potion'])!;
 const shuffled: number[] = rng.shuffle([1, 2, 3, 4, 5]);
+const out = { x: 0, y: 0 };
+rng.unitVector(out); // typed as { x: number; y: number }
 ```
 
 ## License
